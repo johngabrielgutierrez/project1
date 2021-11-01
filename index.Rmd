@@ -19,73 +19,134 @@ tidy=TRUE, tidy.opts=list(width.cutoff=60), R.options=list(max.print=100))
 
 ## Data Wrangling, Exploration, Visualization
 
-### Name and EID here
+### John Gutierrez JGG2649
 
 #### Introduction 
 
-Paragraph or two introducing your datasets and variables, why they are interesting to you, etc.
+A couple weeks ago I finished reading *Moneyball*, by Michael Lewis. A book largely about the 2002 season of Oakland A's, a baseball team in the MLB. A's General Manager, Billy Beane, decided that the people in charge of baseball teams were not effectively leveraging statistics to run their baseball teams efficiently.
+
+One of Beane's core theories was that baseball teams were critically undervaluing what's called *On-Base Percentage* (OBP). On-Base Percentage, simply put, is the proportion of batters that get on base. It does not matter how they get on base (they could be walked, hit a single, hit a home run, be hit by the pitch, etc.), just that they do not get out. Higher OBP leads to fewer outs which leads to scoring more runs which leads to winning more games. Sounds simple right? Billy Beane thought so, but he thought that other managers didn't understand it that way.
+
+Despite being one of the poorer team's in the MLB, the Oakland A's in the early 2000's saw great success due to their leveraging of statistics and finding players with, among other traits, great OBP *for their price*. The A's were just as successful as the Yankees while paying their players half as much.
+
+This led me to want to analyze data on modern OBP and salaries and compare that to how successful teams were in their seasons. Are all teams allocating their money efficiently, or are some big-money teams still getting outplayed? All ranking and batting data is from Baseball-Reference.com and salary data is from spotrac.com.
 
 ```{R}
-# read your datasets in here, e.g., with read_csv()
+library(tidyverse)
 
+payroll2020 <- read_csv("2020payroll.csv")
+payroll2021 <- read_csv("2021payroll.csv")
+rank2020 <- read_csv("2020rankings.csv")
+rank2021 <- read_csv("2021rankings.csv")
+batting2021 <- read_csv("2021batting.csv")
+batting2020 <- read_csv("2020batting.csv")
 ```
 
 #### Tidying: Reshaping
 
-If your datasets are tidy already, demonstrate that you can reshape data with pivot wider/longer here (e.g., untidy and then retidy). Alternatively, it may be easier to wait until the wrangling section so you can reshape your summary statistics. Note here if you are going to do this.
-
-```{R}
-# your tidying code (if applicable; can also wait until wrangling section)
-```
+I decided to do some reshaping in the summary statistics section, since my data is already tidy.
 
     
 #### Joining/Merging
 
 ```{R}
-# your joining code
+payroll <- payroll2020 %>% mutate(Year=2020) %>%
+  bind_rows(payroll2021  %>% mutate(Year=2021))
+rank <- rank2020 %>% mutate(Year=2020) %>% slice(1:30) %>%
+  bind_rows(rank2021 %>% mutate(Year=2021) %>% slice(1:30))
+batting <- batting2020 %>% mutate(Year=2020) %>% slice(1:30) %>%
+  bind_rows(batting2021 %>% mutate(Year=2021) %>% slice(1:30))
 
-# your joining code
+nrow(batting) == nrow(rank) & nrow(rank) == nrow(payroll) & nrow(payroll) == 60
 ```
 
-Discussions of joining here. Feel encouraged to break up into more than once code chunk and discuss each in turn.
+Before we join, I'd like to combine my 6 data frames from two different years into 3 data frames with a new Year variable. We do so above with mutate and bind_rows. The slice is to remove the extraneous "League Average" data included in the data sets. Now we have 3 data frames with batting, rank, and payroll data for all 30 teams in years 2020 and 2021, for a total of 60 rows in each data frame. This means our "Primary Key", if you will, is a combination of the Team and Year columns.
+
+Now we're ready to join on team name and year, so that we have data for each team in both years for a total of 60 columns in the combined data set. There's a variable in both batting and rank called "R", but they are not the same thing, so I do not want to join on it. I was afraid that, since my payroll data was from a different website, the team names wouldn't be formatted exactly the same. But after we run a setdiff we can see that luckily the team names match up across data sets, so we're ready to join right away! We'll use a full join because I'd like to retain every row, regardless of NAs. I know there are some NAs in the data set but they aren't in any variable I care about.
+
+```{r}
+c(setdiff(payroll$Team, batting$Tm), setdiff(batting$Tm, payroll$Team))
+df <- rank %>% full_join(batting, by=c("Tm","Year")) %>% full_join(payroll, by=c("Tm"="Team","Year"))
+glimpse(df) #Just so y'all have an idea of what my dataset looks like
+```
+
 
 ####  Wrangling
 
+There's an obvious problem that all the salary numbers are character type and include commas and dollar signs. Let's change that with str_remove_all and as.numeric, applied with mutate_at.
+
 ```{R}
-# your wrangling code
-
-# your wrangling code
-
-# your wrangling code
+money_to_num <- function(x)as.numeric(str_remove_all(x,'[$,]'))
+df <- df %>% mutate_at(vars(Active:Total), money_to_num)
+df %>% select(Tm, Active:Total) %>% head
 ```
 
-Your discussion of wrangling section here. Feel encouraged to break up into more than once code chunk and discuss each in turn.
+To make a new variable that's at least a function of one other variable, let's make a variable that's "OBP per million dollars", and go ahead and see which teams are paying the least for their OBP averaged over both years, as well as their average finishing rank.
+
+```{r}
+df <- df %>% mutate(OBPdollars = OBP/(Total/1000000))
+df %>% group_by(Tm) %>% summarize(avg=mean(OBPdollars), mean(Rk)) %>%
+  arrange(desc(avg)) %>% slice(1:10)
+```
+
+Including the average rank is important because, as you can see, even though the Orioles have the best OBP salary efficiency, they don't perform very well, probably because their bankroll and OBP are both low. The Rays, on the other hand, stick out like a sore thumb. We also spot the Athletics, the notoriously thrifty team studied in *Moneyball*. Below are some summary statistics on some of the more interesting variables.
+
+```{r}
+library(kableExtra)
+countNA <- function(z)sum(is.na(z))
+df %>% mutate(`Salary($M)`=Total/1000000) %>%
+  summarize_at(vars(W, `W-L%`, RBI, OBP, `Salary($M)`),
+                    .funs=lst(mean, sd, var, min, max, n_distinct, countNA)) %>%
+  pivot_longer(cols=everything()) %>% separate(name, into=c("stat", "name"), sep="_") %>%
+  pivot_wider(names_from="name",values_from="value") %>%
+  rename(n_distinct=n) %>%
+  kable(digits = 3, align = 'c', col.names=str_to_title(names(.)))
+
+df %>% mutate(`Salary($M)`=Total/1000000) %>%
+  group_by(Tm) %>%
+  summarize_at(vars(W, `W-L%`, RBI, OBP, `Salary($M)`),
+                    .funs=lst(mean, sd, var, min, max, n_distinct, countNA)) %>%
+  pivot_longer(cols=2:36) %>% separate(name, into=c("stat", "name"), sep="_") %>%
+  pivot_wider(names_from="name",values_from="value") %>%
+  rename(n_distinct=n) %>%
+  filter(Tm=="Oakland Athletics") %>% #Filtered so that I'm not listing 150 rows
+  kable(digits = 3, align = 'c', col.names=str_to_title(names(.)))
+```
 
 
 #### Visualizing
 
 ```{R}
-# your plot 1
+df <- df %>% mutate(Year=as.factor(Year), Salary=Total/1000000)
+df %>% ggplot(aes(x=`W-L%`, y=OBP)) +
+  geom_smooth(method='lm', color="Black") +
+  geom_point(aes(color=Salary), size=3, alpha=.9) +
+  scale_color_gradient(name="Salary\n(Million $)", low="light green", high="black") +
+  ggtitle("OBP vs Record")
 ```
 
-Your discussion of plot 1
+First it seems appropriate to see if teams with good OBP actually win games. Maybe a bit obvious, but we do see a good relationship between OBP and overall season record.
 
 ```{R}
-# your plot 2
+df %>% ggplot() +
+  geom_density(aes(x=Salary, fill=Year)) +
+  facet_grid(.~Year, scales = "free_x") +
+  xlab("Total Team Salary (Millions $)") +
+  scale_fill_brewer(palette = "Accent") +
+  theme(legend.position = "none") +
+  ggtitle("Salary Distributions by Year")
 ```
 
-Your discussion of plot 2
+What do salary distributions looks like in the MLB anyways? 2020 was kind of a weird year because of the pandemic, so it might be a bit of an outlier compared to most other years.
 
 ```{R}
-# your plot 3
+df %>% ggplot() +
+  geom_point(aes(x=`W-L%`, y=OBPdollars, color=Year, size=Salary), alpha=.8) + 
+  ylab("OBP per Million Dollars Spent") +
+  ggtitle("OBP Efficiency vs Record") +
+  theme_bw()
 ```
 
-Your discussion of plot 3
-
-#### Concluding Remarks
-
-If any!
-
-
+Do teams spending less for their OBP end up with more wins? Well... not necessarily. In fact, it seems like there's no relationship between the two. Perhaps this is because there's more to winning a baseball game than just OBP. Perhaps teams have become more efficient in recent years, so even the ones who are relatively less efficient are spending their cash wisely enough to win games.
 
 
